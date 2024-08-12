@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::Path;
 use std::{fs, io};
@@ -73,28 +73,41 @@ fn run() -> anyhow::Result<()> {
         }
 
         let scripted_name = rtti.native_to_script_map().get(name).unwrap_or(name);
-        let mut current_size = 0;
-        let mut contains_padding = false;
         let Some(bundle_struct) = known_structs.get(scripted_name.as_str()) else {
             continue;
         };
-        let mut remaining = bundle_struct
+
+        let exported_fields = bundle_struct
             .fields()
             .iter()
             .map(|&idx| {
                 let field = bundle
                     .get_item(idx)
-                    .ok_or_else(|| anyhow::anyhow!("failed to get field"))?;
+                    .ok_or_else(|| anyhow::anyhow!("failed to get field for {name}"))?;
                 bundle
                     .get_item(field.name())
-                    .ok_or_else(|| anyhow::anyhow!("failed to get field name"))
+                    .ok_or_else(|| anyhow::anyhow!("failed to get field name for {name}"))
             })
-            .collect::<Result<HashSet<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let mut props = class.properties().iter().copied().collect::<Vec<_>>();
-        props.sort_by_key(|prop| prop.value_offset());
+        if exported_fields.len() != class.properties().len() as usize {
+            continue;
+        }
 
-        for prop in props {
+        if !exported_fields
+            .iter()
+            .zip(class.properties())
+            .all(|(&field, &prop)| field == prop.name().as_str())
+        {
+            continue;
+        }
+
+        let mut sorted_props = class.properties().iter().copied().collect::<Vec<_>>();
+        sorted_props.sort_by_key(|prop| prop.value_offset());
+        let mut current_size = 0;
+        let mut contains_padding = false;
+
+        for prop in sorted_props {
             let offset = prop.value_offset();
             if offset < current_size {
                 log::info!("Propety {} falls behind the current offset", prop.name());
@@ -104,11 +117,10 @@ fn run() -> anyhow::Result<()> {
             if offset != current_size.next_multiple_of(prop.type_().alignment()) {
                 contains_padding = true;
             }
-            remaining.remove(&prop.name().as_str());
             current_size = offset + prop.type_().size();
         }
 
-        if remaining.is_empty() && !contains_padding {
+        if !contains_padding {
             matches.insert(scripted_name.as_str());
         }
     }
